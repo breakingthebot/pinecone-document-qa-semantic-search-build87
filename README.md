@@ -1,52 +1,64 @@
-# Build 87 — Pinecone: Document Q&A & Semantic Vector Search
+# Build 87 — Pinecone: Enterprise Document Q&A & Hybrid RAG Engine
 
 > **Category**: Databases - Vector/Search  
-> **Summary**: Enterprise Document Q&A RAG engine featuring dense vector embeddings, Pinecone index namespace partitioning, metadata filtering, nearest-neighbor semantic search, and cited AI answer synthesis.
+> **Summary**: Enterprise Document Q&A RAG engine featuring dense vector embeddings, BM25 sparse vectors, Pinecone hybrid index search, conversational session memory with query reformulation, faithfulness & hallucination guardrails, and an interactive web dashboard.
 
 ---
 
-## System Overview & Architecture
+## Architecture & System Overview
 
-Build 87 delivers an enterprise-grade Retrieval-Augmented Generation (RAG) and Document Q&A backend powered by **Pinecone** vector database architecture and **FastAPI**. The system ingests multi-page documents, segments them into sentence-aligned overlapping chunks, computes normalized 128-dimensional dense vector embeddings, and persists them into partitioned index namespaces with rich metadata payloads. When querying, natural-language questions are embedded on-the-fly, scored via cosine nearest-neighbor similarity, and synthesized into grounded answers backed by chunk-level citations.
+Build 87 delivers an enterprise-grade Retrieval-Augmented Generation (RAG) and semantic document question-answering platform powered by **Pinecone** vector database architecture and **FastAPI**. 
+
+The system implements Pinecone's serverless hybrid indexing architecture, pairing 128-dimensional dense float vector embeddings with high-dimensional BM25 sparse token representations. During retrieval, linear alpha weighting combines semantic intent with exact keyword precision. The conversational layer maintains session context and automatically reformulates follow-up queries containing pronouns. Finally, each synthesized answer is evaluated against RAG Triad faithfulness guardrails to guarantee grounding and eliminate hallucinations.
 
 ```mermaid
 flowchart TD
-    subgraph Ingestion["Document Ingestion Pipeline"]
-        DocInput["Source Document<br/>(Title, Content, Namespace)"] --> Chunker["Sentence-Window Chunker<br/>(400 chars / 80 overlap)"]
-        Chunker --> Embedder["Dense Vector Embedder<br/>(128-d L2-normalized)"]
-        Embedder --> Records["Pinecone Vector Records<br/>(ID, Values, Metadata)"]
+    subgraph Ingestion["Document Ingestion & Indexing"]
+        DocInput["Source Document<br/>(Title, Content, Metadata)"] --> Chunker["Sentence-Window Chunker<br/>(400 chars / 80 overlap)"]
+        Chunker --> DenseEmbed["Dense Vectorizer<br/>(128-d L2 Unit-Norm)"]
+        Chunker --> SparseEmbed["BM25 Sparse Vectorizer<br/>(Coordinate Hashing)"]
+        DenseEmbed --> Records["Pinecone Hybrid Vector Records"]
+        SparseEmbed --> Records
         Records --> PineconeStore[("Pinecone Vector Index<br/>(Namespace Partitioned)")]
     end
 
-    subgraph QueryPipeline["RAG Q&A Pipeline"]
-        UserQ["User Question / Prompt"] --> QEmbed["Question Vectorizer"]
-        QEmbed --> KNN["Cosine k-NN Search<br/>(top_k=4, Metadata Filter)"]
-        PineconeStore -.-> KNN
-        KNN --> ScoredChunks["Ranked Relevant Chunks<br/>(Scores + Snippets)"]
+    subgraph ChatPipeline["Conversational RAG Pipeline"]
+        UserQ["User Message / Prompt"] --> SessionMgr["Conversation Service<br/>(Session Memory)"]
+        SessionMgr --> Reformulator["Query Reformulator<br/>(Coreference Resolution)"]
+        Reformulator --> HybridQuery["Pinecone Hybrid Query<br/>(Dense + Sparse, alpha=0.70)"]
+        PineconeStore -.-> HybridQuery
+        HybridQuery --> ScoredChunks["Ranked Candidate Chunks<br/>(Top-K Chunks)"]
         ScoredChunks --> Synthesizer["Cited Answer Synthesizer"]
-        Synthesizer --> FinalAnswer["Grounded Response<br/>+ Granular Citations"]
+        Synthesizer --> Guardrails["RAG Triad Guardrails Evaluator<br/>(Faithfulness & Hallucination Check)"]
+        Guardrails --> FinalResponse["Grounded Response + Citations<br/>+ Guardrail Telemetry"]
     end
 ```
 
 ---
 
-## Core Capabilities
+## Core Capabilities (Iteration 2 Deepening)
 
-1. **Deterministic Dense Vector Embedder**:
-   - Computes 128-dimensional L2 unit-norm dense float vectors from raw text.
-   - Leverages sublinear term frequency weighting and character n-gram hashing to guarantee semantic clustering without heavyweight GPU dependencies.
-2. **Pinecone Index & Namespace Partitioning**:
-   - Implements full Pinecone index semantics including `upsert`, `query`, `fetch`, `delete`, and `describe_index_stats`.
-   - Supports multi-tenant namespace isolation (`default`, `knowledge-base`, `science-hub`, `developer-docs`).
-   - Supports Cosine, Dot Product, and Euclidean distance metrics.
-3. **Advanced Metadata Filtering**:
-   - Query by structured metadata using Pinecone filter operators: `$eq`, `$ne`, `$in`, `$nin`, `$gt`, `$gte`, `$lt`, `$lte`, and `$and`.
-4. **Sentence-Window Sliding Chunker**:
-   - Preserves complete sentence boundaries with configurable chunk size (default: 400 chars) and sliding window overlap (default: 80 chars) to prevent context truncation.
-5. **Grounded RAG Answer Synthesis**:
-   - Extracts highest-confidence sentences matching question tokens.
-   - Refuses unanswerable queries cleanly below the confidence threshold to eliminate hallucinations.
-   - Formulates responses accompanied by granular citations (document title, category, chunk index, similarity score, source snippet).
+1. **Pinecone Native Hybrid Search**:
+   - Blends 128-dimensional dense vector embeddings with sparse BM25 token frequencies.
+   - Configurable $\alpha$ weighting:
+     $$\text{Score} = \alpha \cdot \text{DenseScore} + (1.0 - \alpha) \cdot \text{SparseScore}$$
+     where $\alpha = 1.0$ is pure dense semantic search, $\alpha = 0.0$ is pure BM25 keyword search, and $\alpha = 0.70$ is the balanced enterprise standard.
+2. **Deterministic BM25 Sparse Vectorizer**:
+   - Encodes text into Pinecone `SparseValues` containing parallel integer coordinate indices and normalized BM25 term weights.
+3. **Multi-Turn Conversational Memory**:
+   - In-memory session tracking with unique `session_id`.
+   - Automatic query reformulation: contextualizes pronoun-heavy follow-up questions (e.g. "How does it scale?") by injecting topics from prior turns.
+   - Context budget pruning: keeps history bounded within configured turn limits.
+4. **RAG Triad Faithfulness & Hallucination Guardrails**:
+   - Splits synthesized answers into individual factual claim clauses.
+   - Evaluates token and semantic overlap against retrieved citation snippets.
+   - Outputs Faithfulness Score ($0.0 - 1.0$), Context Relevance Score ($0.0 - 1.0$), Grounding boolean flag, and claim-by-claim verification notes.
+5. **Interactive Web Showcase Dashboard**:
+   - Modern glassmorphic web dashboard mounted at `/dashboard`.
+   - **Document Studio**: Document ingestion with real-time chunk preview and active catalog manager.
+   - **Hybrid Search Playground**: Real-time $\alpha$ slider, namespace selector, top-k tuning, and similarity score gauge bars.
+   - **Conversational RAG Chat**: Interactive chat stream with expandable citation pills and real-time faithfulness badges.
+   - **Index Telemetry**: Live vector counters and namespace distribution tables.
 
 ---
 
@@ -54,61 +66,30 @@ flowchart TD
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `GET` | `/` | Service discovery, index configuration, and RAG guide |
-| `POST` | `/api/documents` | Ingest document, chunk text, embed vectors, and index to Pinecone |
-| `GET` | `/api/documents` | List all ingested documents, optionally filtered by namespace |
+| `GET` | `/dashboard` | Interactive Web Showcase UI Dashboard |
+| `GET` | `/` | Service discovery, architecture details, and RAG guide |
+| `POST` | `/api/documents` | Ingest document, chunk text, compute dense & sparse vectors, and index |
+| `GET` | `/api/documents` | List ingested documents with optional namespace filter |
 | `GET` | `/api/documents/{doc_id}` | Retrieve document metadata from catalog |
-| `DELETE` | `/api/documents/{doc_id}` | Delete document and purge all associated chunk vectors |
-| `POST` | `/api/documents/vectors/upsert` | Raw vector upsert endpoint for custom pre-computed vectors |
-| `POST` | `/api/search/vectors` | Nearest-neighbor vector search with optional query text and filters |
-| `POST` | `/api/qa/ask` | End-to-end RAG question answering with grounded citations |
+| `DELETE` | `/api/documents/{doc_id}` | Delete document and purge vector chunks from Pinecone |
+| `POST` | `/api/documents/vectors/upsert` | Raw vector upsert endpoint |
+| `POST` | `/api/search/vectors` | Nearest-neighbor dense vector search |
+| `POST` | `/api/search/hybrid` | Pinecone hybrid search with dense + sparse alpha blending |
+| `POST` | `/api/qa/ask` | Single-shot RAG question answering with citations and guardrails |
+| `POST` | `/api/chat/message` | Multi-turn conversational chat with query reformulation |
+| `GET` | `/api/chat/sessions/{id}` | Retrieve conversational session history |
+| `DELETE` | `/api/chat/sessions/{id}` | Clear conversational session history |
+| `POST` | `/api/guardrails/evaluate` | Standalone RAG Triad faithfulness evaluation endpoint |
 | `GET` | `/api/system/stats` | Index telemetry, total vector count, and per-namespace stats |
-| `POST` | `/api/system/reset` | Purge all vectors and reset index state |
+| `POST` | `/api/system/reset` | Purge all vector records and reset test state |
 
 ---
 
-## Project Structure
+## Data Handling & Privacy Posture
 
-```
-Build_87/
-├── .env.example              # Sample configuration settings
-├── .gitignore                # Git exclusions (credentials, caches, private notes)
-├── LICENSE                   # MIT Open-Source License
-├── README.md                 # System documentation & usage guide
-├── CHANGELOG.md              # Semantic release notes
-├── requirements.txt          # Pinned Python package dependencies
-├── src/
-│   ├── __init__.py
-│   ├── config.py             # Environment configurations (dimensions, metrics, timeouts)
-│   ├── main.py               # FastAPI entrypoint & router orchestration
-│   ├── api/
-│   │   ├── __init__.py
-│   │   ├── routes_documents.py # Document ingestion & catalog endpoints
-│   │   ├── routes_search.py    # Vector nearest-neighbor search endpoint
-│   │   ├── routes_qa.py        # RAG Q&A endpoint
-│   │   └── routes_system.py    # Telemetry and index reset endpoints
-│   ├── engine/
-│   │   ├── __init__.py
-│   │   ├── embedder.py         # 128-d deterministic dense vector encoder
-│   │   ├── memory_pinecone.py  # In-memory Pinecone replica with namespace isolation
-│   │   └── pinecone_client.py  # Engine singleton factory
-│   ├── models/
-│   │   ├── __init__.py
-│   │   └── schema.py           # Pydantic schemas (requests, responses, citations)
-│   └── services/
-│       ├── __init__.py
-│       ├── chunking_service.py # Sentence-window chunker with overlap
-│       ├── document_service.py # Document ingestion & vector sync
-│       └── qa_rag_service.py   # RAG search & cited answer formulation
-└── tests/
-    ├── __init__.py
-    ├── conftest.py             # Shared fixtures and auto-reset hooks
-    ├── test_embedder.py        # Embedder unit tests (L2 norm, similarity, dimension)
-    ├── test_chunking_service.py # Boundary preservation and sliding window tests
-    ├── test_memory_pinecone.py # Pinecone operations, metrics, and filters
-    ├── test_qa_rag_service.py  # RAG answer synthesis and refusal tests
-    └── test_api_integration.py # FastAPI route integration tests
-```
+- **Zero Retention by Default**: All vector records, in-memory Pinecone namespaces, and conversation sessions are held in transient memory and can be purged instantly via `POST /api/system/reset` or `DELETE /api/chat/sessions/{id}`.
+- **Environment Isolation**: Live API keys and credentials are read strictly from `.env` and excluded from source control.
+- **Namespace Boundary Protection**: Partitioned namespaces (`knowledge-base`, `science-hub`, `developer-docs`) prevent cross-tenant vector leakage.
 
 ---
 
@@ -120,21 +101,21 @@ Build_87/
 # Navigate to project directory
 cd Build_87
 
-# Create and activate virtual environment
-python -m venv venv
+# Activate existing virtual environment
 .\venv\Scripts\Activate.ps1
 
-# Install dependencies
+# Install requirements
 pip install -r requirements.txt
 ```
 
-### 2. Run the Development Server
+### 2. Launch Development Server
 
 ```powershell
 uvicorn src.main:app --reload --port 8000
 ```
 
-Interactive API documentation will be available at `http://127.0.0.1:8000/docs`.
+- Open **Interactive Dashboard**: [`http://127.0.0.1:8000/dashboard`](http://127.0.0.1:8000/dashboard)
+- Open **Swagger API Documentation**: [`http://127.0.0.1:8000/docs`](http://127.0.0.1:8000/docs)
 
 ### 3. Run Automated Tests
 
@@ -142,65 +123,47 @@ Interactive API documentation will be available at `http://127.0.0.1:8000/docs`.
 pytest -v
 ```
 
-All 29 tests will execute and validate:
-- Embedder dimensionality and unit-normalization
-- Sentence chunking and overlap preservation
-- Pinecone vector upsert, k-NN ranking, and metadata filtering
-- RAG question answering with verified citations
-- HTTP endpoint integration and system telemetry
+All 43 unit and integration tests will execute in $< 1$ second.
 
 ---
 
-## Example Usage
+## Manual Verification Steps
 
-### Ingest a Document
-```bash
-curl -X POST "http://127.0.0.1:8000/api/documents" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "title": "Quantum Computing Fundamentals",
-    "content": "Quantum computers utilize qubits to perform calculations. Superposition allows qubits to exist in multiple states simultaneously. Entanglement connects qubits instantaneously.",
-    "category": "Physics",
-    "namespace": "science-hub",
-    "metadata": {
-      "author": "Dr. Sarah Lin",
-      "department": "Quantum Labs"
-    }
-  }'
+### Step 1: Ingest Sample Document via PowerShell
+```powershell
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/documents" -Method POST -ContentType "application/json" -Body (@{
+    title = "Pinecone Serverless Architecture"
+    content = "Pinecone is a cloud-native vector database for low-latency similarity search. It uses isolated namespaces for multi-tenant data partitioning. Hybrid search blends dense embeddings with BM25 sparse vectors."
+    category = "Databases"
+    namespace = "knowledge-base"
+} | ConvertTo-Json)
 ```
 
-### Ask a Question (RAG Synthesis)
-```bash
-curl -X POST "http://127.0.0.1:8000/api/qa/ask" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "question": "What allows qubits to exist in multiple states?",
-    "namespace": "science-hub",
-    "top_k": 3,
-    "min_score_threshold": 0.10
-  }'
+### Step 2: Test Multi-Turn Conversational Q&A (Turn 1)
+```powershell
+$res1 = Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/chat/message" -Method POST -ContentType "application/json" -Body (@{
+    message = "What is Pinecone?"
+    namespace = "knowledge-base"
+    alpha = 0.70
+} | ConvertTo-Json)
+
+$sessId = $res1.session_id
+Write-Host "Created Session ID: $sessId"
+Write-Host "Answer: $($res1.messages[-1].content)"
 ```
 
-**Response**:
-```json
-{
-  "question": "What allows qubits to exist in multiple states?",
-  "answer": "Based on Quantum Computing Fundamentals (Physics): Superposition allows qubits to exist in multiple states simultaneously.",
-  "confidence_score": 0.38,
-  "citations": [
-    {
-      "doc_id": "doc_9f410a8bc1",
-      "title": "Quantum Computing Fundamentals",
-      "category": "Physics",
-      "chunk_index": 0,
-      "similarity_score": 0.3812,
-      "snippet": "Superposition allows qubits to exist in multiple states simultaneously."
-    }
-  ],
-  "total_candidates_reviewed": 1,
-  "namespace": "science-hub",
-  "processing_time_ms": 1.45
-}
+### Step 3: Test Query Reformulation on Follow-up (Turn 2)
+```powershell
+$res2 = Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/chat/message" -Method POST -ContentType "application/json" -Body (@{
+    session_id = $sessId
+    message = "How does it handle multi-tenancy?"
+    namespace = "knowledge-base"
+    alpha = 0.70
+} | ConvertTo-Json)
+
+Write-Host "Reformulated Query: $($res2.reformulated_query)"
+Write-Host "Answer: $($res2.messages[-1].content)"
+Write-Host "Faithfulness: $($res2.messages[-1].guardrails.faithfulness_score)"
 ```
 
 ---

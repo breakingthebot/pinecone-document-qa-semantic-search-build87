@@ -10,9 +10,12 @@ from typing import Dict, Any, List, Optional
 from src.config import settings
 from src.engine.pinecone_client import get_pinecone_engine
 from src.engine.embedder import get_embedder
+from src.engine.bm25_sparse import get_sparse_vectorizer
+from src.services.guardrails_service import get_guardrails_service
 from src.models.schema import (
     VectorQueryRequest,
     VectorQueryResponse,
+    HybridQueryRequest,
     QuestionAnsweringRequest,
     QuestionAnsweringResponse,
     Citation,
@@ -21,12 +24,14 @@ from src.models.schema import (
 
 class QARagService:
     """
-    RAG pipeline service orchestrating semantic search and cited answer synthesis.
+    RAG pipeline service orchestrating semantic and hybrid search, answer synthesis, and guardrails.
     """
 
     def __init__(self) -> None:
         self.engine = get_pinecone_engine()
         self.embedder = get_embedder()
+        self.sparse_vectorizer = get_sparse_vectorizer()
+        self.guardrails_service = get_guardrails_service()
 
     def semantic_search(self, request: VectorQueryRequest) -> VectorQueryResponse:
         """
@@ -53,13 +58,33 @@ class QARagService:
             include_values=request.include_values,
         )
 
+    def hybrid_search(self, request: HybridQueryRequest) -> VectorQueryResponse:
+        """
+        Executes Pinecone hybrid search blending dense semantic embeddings with BM25 sparse vectors.
+        """
+        dense_vec = self.embedder.embed_text(request.query_text)
+        sparse_vec = self.sparse_vectorizer.encode_text(request.query_text)
+        ns = request.namespace or settings.DEFAULT_NAMESPACE
+
+        return self.engine.query(
+            vector=dense_vec,
+            sparse_vector=sparse_vec,
+            alpha=request.alpha,
+            top_k=request.top_k,
+            namespace=ns,
+            filter=request.filter,
+            include_metadata=request.include_metadata,
+            include_values=False,
+        )
+
     def answer_question(self, request: QuestionAnsweringRequest) -> QuestionAnsweringResponse:
         """
         Executes full RAG workflow:
-        1. Encodes question into dense vector.
-        2. Retrieves top-k candidate chunks from Pinecone.
+        1. Encodes question into dense vector and BM25 sparse vector.
+        2. Retrieves top-k candidate chunks from Pinecone using hybrid scoring.
         3. Filters by score threshold and metadata filters.
         4. Extracts relevant sentences and synthesizes answer with document citations.
+        5. Computes RAG Triad faithfulness and hallucination guardrail metrics.
         """
         start_time = time.perf_counter()
         ns = request.namespace or settings.DEFAULT_NAMESPACE
@@ -74,12 +99,15 @@ class QARagService:
 
         active_filter = query_filter if query_filter else None
 
-        # 1. Embed user question
+        # 1. Embed user question: dense + sparse vectors
         question_vector = self.embedder.embed_text(request.question)
+        sparse_vector = self.sparse_vectorizer.encode_text(request.question)
 
-        # 2. Retrieve nearest neighbor chunks from Pinecone
+        # 2. Retrieve nearest neighbor chunks from Pinecone using hybrid scoring
         search_res = self.engine.query(
             vector=question_vector,
+            sparse_vector=sparse_vector,
+            alpha=request.alpha,
             top_k=request.top_k or settings.DEFAULT_TOP_K,
             namespace=ns,
             filter=active_filter,
@@ -103,6 +131,7 @@ class QARagService:
                 total_candidates_reviewed=len(search_res.matches),
                 namespace=ns,
                 processing_time_ms=duration_ms,
+                guardrails=None,
             )
 
         # 4. Extract citations and synthesize answer
@@ -152,6 +181,13 @@ class QARagService:
         answer_body = " ".join(dict.fromkeys(synthesized_points))
         formatted_answer = f"Based on {citations[0].title} ({citations[0].category}): {answer_body}"
 
+        # 5. Evaluate Faithfulness and Hallucination Guardrails
+        guardrail_eval = self.guardrails_service.evaluate_answer(
+            question=request.question,
+            answer=formatted_answer,
+            citations=citations,
+        )
+
         duration_ms = round((time.perf_counter() - start_time) * 1000.0, 2)
 
         return QuestionAnsweringResponse(
@@ -162,4 +198,5 @@ class QARagService:
             total_candidates_reviewed=len(search_res.matches),
             namespace=ns,
             processing_time_ms=duration_ms,
+            guardrails=guardrail_eval,
         )

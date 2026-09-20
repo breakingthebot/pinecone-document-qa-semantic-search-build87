@@ -51,13 +51,23 @@ class DocumentResponse(BaseModel):
     created_at: str
 
 
+class SparseValues(BaseModel):
+    """
+    Pinecone sparse vector payload representing token weights or BM25 indices.
+    """
+
+    indices: List[int] = Field(default_factory=list, description="Sparse vector non-zero coordinate indices")
+    values: List[float] = Field(default_factory=list, description="Sparse vector token weights or BM25 scores")
+
+
 class VectorRecord(BaseModel):
     """
-    Pinecone vector record payload containing dense values and metadata payload.
+    Pinecone vector record payload containing dense values, optional sparse values, and metadata payload.
     """
 
     id: str
     values: List[float]
+    sparse_values: Optional[SparseValues] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -86,12 +96,26 @@ class VectorQueryRequest(BaseModel):
     """
 
     vector: Optional[List[float]] = Field(default=None, description="Pre-computed dense float vector query")
+    sparse_vector: Optional[SparseValues] = Field(default=None, description="Pre-computed sparse vector query")
     query_text: Optional[str] = Field(default=None, description="Natural language search phrase to embed on-the-fly")
     top_k: int = Field(default=4, ge=1, le=100, description="Number of nearest neighbors to retrieve")
     namespace: str = Field(default="default", description="Target namespace to search within")
     filter: Optional[Dict[str, Any]] = Field(default=None, description="Pinecone metadata filter ($eq, $in, $gt, etc.)")
     include_metadata: bool = Field(default=True, description="Whether to include metadata in matches")
     include_values: bool = Field(default=False, description="Whether to return float vector values")
+
+
+class HybridQueryRequest(BaseModel):
+    """
+    Pinecone Hybrid search query combining dense vector and sparse keyword components with alpha weighting.
+    """
+
+    query_text: str = Field(..., min_length=1, description="Natural language search query")
+    namespace: str = Field(default="default", description="Pinecone partition namespace")
+    alpha: float = Field(default=0.7, ge=0.0, le=1.0, description="Hybrid weighting: 1.0 = pure dense semantic, 0.0 = pure sparse keyword")
+    top_k: int = Field(default=4, ge=1, le=50, description="Number of results to retrieve")
+    filter: Optional[Dict[str, Any]] = Field(default=None, description="Metadata filter conditions")
+    include_metadata: bool = Field(default=True, description="Whether to include metadata in matches")
 
 
 class ScoredMatch(BaseModel):
@@ -102,6 +126,7 @@ class ScoredMatch(BaseModel):
     id: str
     score: float
     values: Optional[List[float]] = None
+    sparse_values: Optional[SparseValues] = None
     metadata: Optional[Dict[str, Any]] = None
 
 
@@ -127,6 +152,17 @@ class Citation(BaseModel):
     snippet: str
 
 
+class GuardrailEvaluation(BaseModel):
+    """
+    RAG Triad and Hallucination Guardrail metrics for answer verification.
+    """
+
+    faithfulness_score: float = Field(..., ge=0.0, le=1.0, description="Fraction of claims grounded in retrieved citations")
+    context_relevance_score: float = Field(..., ge=0.0, le=1.0, description="Relevance of retrieved chunks to question")
+    is_grounded: bool = Field(..., description="True if faithfulness meets or exceeds verification threshold")
+    verification_notes: List[str] = Field(default_factory=list, description="Claim-by-claim reasoning notes")
+
+
 class QuestionAnsweringRequest(BaseModel):
     """
     Request payload for end-to-end Document Q&A RAG pipeline.
@@ -138,6 +174,7 @@ class QuestionAnsweringRequest(BaseModel):
     metadata_filter: Optional[Dict[str, Any]] = Field(default=None, description="Custom Pinecone metadata filter")
     top_k: int = Field(default=4, ge=1, le=20, description="Number of context chunks to retrieve for synthesis")
     min_score_threshold: float = Field(default=0.1, ge=0.0, le=1.0, description="Minimum similarity score cutoff")
+    alpha: float = Field(default=0.7, ge=0.0, le=1.0, description="Hybrid search alpha: 1.0=dense, 0.0=sparse keyword")
 
 
 class QuestionAnsweringResponse(BaseModel):
@@ -152,6 +189,44 @@ class QuestionAnsweringResponse(BaseModel):
     total_candidates_reviewed: int
     namespace: str
     processing_time_ms: float
+    guardrails: Optional[GuardrailEvaluation] = None
+
+
+class ChatMessage(BaseModel):
+    """
+    Single message turn in a multi-turn conversation.
+    """
+
+    role: str = Field(..., description="Role: 'user' or 'assistant'")
+    content: str = Field(..., description="Message content")
+    citations: Optional[List[Citation]] = None
+    guardrails: Optional[GuardrailEvaluation] = None
+    timestamp: Optional[str] = None
+
+
+class ChatRequest(BaseModel):
+    """
+    Request to send a message in a multi-turn chat session.
+    """
+
+    session_id: Optional[str] = Field(default=None, description="Unique conversation session ID. Generated if omitted.")
+    message: str = Field(..., min_length=1, description="User's new message or question")
+    namespace: str = Field(default="default", description="Target Pinecone index namespace")
+    alpha: float = Field(default=0.7, ge=0.0, le=1.0, description="Hybrid search alpha: 1.0=dense, 0.0=sparse keyword")
+    top_k: int = Field(default=4, ge=1, le=20, description="Context chunks to retrieve")
+    category_filter: Optional[str] = Field(default=None, description="Optional category restriction")
+
+
+class ChatSessionResponse(BaseModel):
+    """
+    Full conversational state for a session.
+    """
+
+    session_id: str
+    messages: List[ChatMessage]
+    namespace: str
+    turn_count: int
+    reformulated_query: Optional[str] = None
 
 
 class IndexStatsResponse(BaseModel):

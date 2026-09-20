@@ -11,6 +11,7 @@ from typing import Dict, Any, List, Optional
 from src.config import settings
 from src.engine.pinecone_client import get_pinecone_engine
 from src.engine.embedder import get_embedder
+from src.engine.bm25_sparse import get_sparse_vectorizer
 from src.models.schema import (
     DocumentIngestRequest,
     DocumentResponse,
@@ -27,6 +28,7 @@ class DocumentService:
     def __init__(self) -> None:
         self.engine = get_pinecone_engine()
         self.embedder = get_embedder()
+        self.sparse_vectorizer = get_sparse_vectorizer()
         self.chunker = ChunkingService()
         # In-memory document metadata catalog: doc_id -> doc_dict
         self.documents_catalog: Dict[str, Dict[str, Any]] = {}
@@ -63,16 +65,18 @@ class DocumentService:
         chunk_texts = [c.text for c in chunks]
         embeddings = self.embedder.embed_batch(chunk_texts)
 
-        # 3. Build Pinecone vector records
+        # 3. Build Pinecone vector records with dense embeddings and BM25 sparse vectors
         vector_records: List[VectorRecord] = []
         chunk_ids: List[str] = []
 
         for chunk, vec_values in zip(chunks, embeddings):
             chunk_ids.append(chunk.id)
+            sparse_val = self.sparse_vectorizer.encode_text(chunk.text)
             vector_records.append(
                 VectorRecord(
                     id=chunk.id,
                     values=vec_values,
+                    sparse_values=sparse_val,
                     metadata=chunk.metadata,
                 )
             )

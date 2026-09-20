@@ -273,3 +273,120 @@ def test_system_stats_and_reset_endpoints(client: TestClient):
     stats_after = client.get("/api/system/stats").json()
     assert stats_after["total_vector_count"] == 0
     assert len(stats_after["namespaces"]) == 0
+
+
+def test_dashboard_endpoint(client: TestClient):
+    """
+    Tests that the interactive web showcase dashboard loads with 200 OK.
+    """
+    res = client.get("/dashboard")
+    assert res.status_code == 200
+    assert "text/html" in res.headers["content-type"]
+    assert "Pinecone Document Q&A" in res.text
+
+
+def test_hybrid_search_api_endpoint(client: TestClient):
+    """
+    Tests the POST /api/search/hybrid endpoint with alpha blending.
+    """
+    # Ingest a document
+    doc = {
+        "title": "Kafka Event Streaming",
+        "content": "Apache Kafka provides distributed publish-subscribe log partitioning with fault tolerance.",
+        "category": "Messaging",
+        "namespace": "stream-ns",
+    }
+    client.post("/api/documents", json=doc)
+
+    hybrid_query = {
+        "query_text": "Kafka event log partition",
+        "namespace": "stream-ns",
+        "alpha": 0.75,
+        "top_k": 3,
+    }
+    res = client.post("/api/search/hybrid", json=hybrid_query)
+    assert res.status_code == 200
+    data = res.json()
+    assert len(data["matches"]) >= 1
+    assert data["matches"][0]["score"] > 0.0
+    assert "Kafka" in data["matches"][0]["metadata"]["text"]
+
+
+def test_chat_multi_turn_flow(client: TestClient):
+    """
+    Tests multi-turn chat interaction, query reformulation, and session lifecycle.
+    """
+    # Ingest a document
+    doc = {
+        "title": "Snowflake Cloud Data Warehouse",
+        "content": "Snowflake separates compute clusters from centralized storage for infinite scale.",
+        "category": "DataWarehousing",
+        "namespace": "cloud-ns",
+    }
+    client.post("/api/documents", json=doc)
+
+    # Turn 1: Initial question
+    req_1 = {
+        "message": "What is Snowflake?",
+        "namespace": "cloud-ns",
+        "alpha": 0.7,
+        "top_k": 3,
+    }
+    res_1 = client.post("/api/chat/message", json=req_1)
+    assert res_1.status_code == 200
+    data_1 = res_1.json()
+    sess_id = data_1["session_id"]
+    assert sess_id is not None
+    assert data_1["turn_count"] == 2
+    assert len(data_1["messages"]) == 2
+
+    # Turn 2: Follow-up question with pronoun 'it'
+    req_2 = {
+        "session_id": sess_id,
+        "message": "How does it scale compute?",
+        "namespace": "cloud-ns",
+        "alpha": 0.7,
+        "top_k": 3,
+    }
+    res_2 = client.post("/api/chat/message", json=req_2)
+    assert res_2.status_code == 200
+    data_2 = res_2.json()
+    assert data_2["session_id"] == sess_id
+    assert data_2["turn_count"] == 4
+    # Query reformulation should have added previous topic
+    assert "Snowflake" in data_2["reformulated_query"]
+
+    # Verify session retrieval
+    get_sess = client.get(f"/api/chat/sessions/{sess_id}")
+    assert get_sess.status_code == 200
+    assert get_sess.json()["turn_count"] == 4
+
+    # Clear session
+    del_sess = client.delete(f"/api/chat/sessions/{sess_id}")
+    assert del_sess.status_code == 200
+    assert del_sess.json()["ok"] is True
+
+
+def test_guardrail_evaluate_endpoint(client: TestClient):
+    """
+    Tests the standalone POST /api/guardrails/evaluate endpoint.
+    """
+    payload = {
+        "question": "What is Pytest?",
+        "answer": "Pytest is a testing framework for Python applications.",
+        "citations": [
+            {
+                "doc_id": "doc_py",
+                "title": "Python Testing Guide",
+                "category": "Testing",
+                "chunk_index": 0,
+                "similarity_score": 0.95,
+                "snippet": "Pytest is a testing framework for Python applications.",
+            }
+        ],
+    }
+    res = client.post("/api/guardrails/evaluate", json=payload)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["is_grounded"] is True
+    assert data["faithfulness_score"] >= 0.80

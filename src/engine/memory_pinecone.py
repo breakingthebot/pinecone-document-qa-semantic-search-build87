@@ -48,6 +48,7 @@ class MemoryPinecone:
     def upsert(self, vectors: List[VectorRecord], namespace: str = "default") -> int:
         """
         Upserts an array of vector records into the specified namespace.
+        Supports dense values, optional sparse values, and metadata.
         """
         with self.lock:
             store = self._get_namespace_store(namespace)
@@ -65,6 +66,7 @@ class MemoryPinecone:
                 store[record.id] = {
                     "id": record.id,
                     "values": vec_arr,
+                    "sparse_values": record.sparse_values,
                     "metadata": dict(record.metadata),
                 }
                 upserted += 1
@@ -85,6 +87,7 @@ class MemoryPinecone:
                     results[vid] = {
                         "id": item["id"],
                         "values": item["values"].tolist(),
+                        "sparse_values": item.get("sparse_values"),
                         "metadata": dict(item["metadata"]),
                     }
 
@@ -130,6 +133,8 @@ class MemoryPinecone:
     def query(
         self,
         vector: List[float],
+        sparse_vector: Optional[Any] = None,
+        alpha: float = 1.0,
         top_k: int = 4,
         namespace: str = "default",
         filter: Optional[Dict[str, Any]] = None,
@@ -138,9 +143,13 @@ class MemoryPinecone:
     ) -> VectorQueryResponse:
         """
         Executes k-nearest neighbors (k-NN) vector search against vectors in the specified namespace.
+        Supports pure dense (alpha=1.0), pure sparse (alpha=0.0), or hybrid weighted scoring.
         Applies metadata filters before ranking.
         """
+        from src.engine.bm25_sparse import get_sparse_vectorizer
+
         query_vec = np.array(vector, dtype=np.float32)
+        sparse_engine = get_sparse_vectorizer()
 
         with self.lock:
             store = self._get_namespace_store(namespace)
@@ -151,8 +160,25 @@ class MemoryPinecone:
                 if filter and not self._matches_filter(item["metadata"], filter):
                     continue
 
-                score = self._compute_similarity(query_vec, item["values"])
-                candidates.append((score, item))
+                # Compute dense similarity
+                dense_score = self._compute_similarity(query_vec, item["values"])
+
+                # Compute sparse similarity if sparse vector is provided and item has sparse values
+                if sparse_vector is not None and item.get("sparse_values") is not None:
+                    sparse_score = sparse_engine.compute_sparse_similarity(
+                        query_sparse=sparse_vector,
+                        doc_sparse=item["sparse_values"],
+                    )
+                else:
+                    sparse_score = 0.0
+
+                # Compute hybrid weighted score
+                if sparse_vector is not None and alpha < 1.0:
+                    combined_score = (alpha * dense_score) + ((1.0 - alpha) * sparse_score)
+                else:
+                    combined_score = dense_score
+
+                candidates.append((combined_score, item))
 
             # Rank candidates descending by similarity score
             candidates.sort(key=lambda x: x[0], reverse=True)
@@ -165,6 +191,7 @@ class MemoryPinecone:
                     score=round(float(score), 4),
                     metadata=dict(item["metadata"]) if include_metadata else None,
                     values=item["values"].tolist() if include_values else None,
+                    sparse_values=item.get("sparse_values"),
                 )
                 matches.append(match_record)
 

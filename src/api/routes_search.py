@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, status
 from src.models.schema import (
     VectorQueryRequest,
     VectorQueryResponse,
+    HybridQueryRequest,
 )
 from src.services.qa_rag_service import QARagService
 
@@ -23,6 +24,21 @@ def query_vectors(payload: VectorQueryRequest) -> VectorQueryResponse:
     """
     try:
         return service.semantic_search(request=payload)
+    except ValueError as ex:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(ex),
+        )
+
+
+@router.post("/hybrid", response_model=VectorQueryResponse)
+def query_hybrid(payload: HybridQueryRequest) -> VectorQueryResponse:
+    """
+    Executes Pinecone hybrid search blending dense vector embeddings and BM25 sparse vectors
+    using configurable alpha weighting (1.0 = dense semantic, 0.0 = sparse keyword).
+    """
+    try:
+        return service.hybrid_search(request=payload)
     except ValueError as ex:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
