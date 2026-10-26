@@ -27,3 +27,10 @@ htmlcov/
 node_modules/
 dist/
 .next/
+
+# Local Governance & Notes (Never Committed)
+AGENTS.master.md
+.agents/
+ITERATION_BACKLOG.md
+*.key
+logs/
